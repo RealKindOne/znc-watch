@@ -117,27 +117,6 @@ TEST_F(ZNCTest, ShellModule) {
     client.ReadUntil("PRIVMSG nick :znc$");
 }
 
-TEST_F(ZNCTest, WatchModule) {
-    // TODO test other messages
-    // TODO test options
-    auto znc = Run();
-    auto ircd = ConnectIRCd();
-    auto client = LoginClient();
-    client.Write("znc loadmod watch");
-    client.Write("PRIVMSG *watch :add *");
-    client.ReadUntil("Adding entry:");
-    ircd.Write(":server 001 nick :Hello");
-    ircd.Write(":nick JOIN :#znc");
-    ircd.Write(":n!i@h PRIVMSG #znc :\001ACTION foo\001");
-    client.ReadUntil(
-        ":$*!watch@znc.in PRIVMSG nick :* CTCP: n [ACTION foo] to [#znc]");
-    client.Write("PRIVMSG *watch :add * *spaces *word1 word2*");
-    client.ReadUntil("Adding entry:");
-    ircd.Write(":n!i@h PRIVMSG #znc :SOMETHING word1 word2 SOMETHING");
-    client.ReadUntil(
-        ":*spaces!watch@znc.in PRIVMSG nick :<n:#znc> SOMETHING word1 word2 SOMETHING");
-}
-
 TEST_F(ZNCTest, ModuleCrypt) {
     QFile conf(m_dir.path() + "/configs/znc.conf");
     ASSERT_TRUE(conf.open(QIODevice::Append | QIODevice::Text));

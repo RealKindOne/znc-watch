@@ -195,50 +195,91 @@ class CWatcherMod : public CModule {
                    [=](const CString& sLine) { SetDetachedChannelOnly(sLine); });
         AddCommand("SetSources", t_d("<Id> [#chan priv #foo* !#bar]"), t_d("Set the source channels that you care about."),
                    [=](const CString& sLine) { SetSources(sLine); });
+        AddCommand("ExemptAdd", t_d("<HostMask> [Pattern]"),
+                   t_d("Add an entry to exempt list."),
+                   [=](const CString& sLine) { ExemptAdd(sLine); });
+        AddCommand("ExemptList", "", t_d("List all exempt entries."),
+                   [=](const CString& sLine) { ExemptList(); });
+        AddCommand("ExemptDel", t_d("<Id>"), t_d("Delete exempt entry by Id."),
+                   [=](const CString& sLine) { ExemptRemove(sLine); });
+        AddCommand("ExemptEnable", t_d("<Id | *>"),
+                   t_d("Enable a disabled exempt entry."),
+                   [=](const CString& sLine) { ExemptEnable(sLine); });
+        AddCommand("ExemptDisable", t_d("<Id | *>"),
+                   t_d("Disable (but don't delete) an exempt entry."),
+                   [=](const CString& sLine) { ExemptDisable(sLine); });
+        AddCommand("ExemptSetSources", t_d("<Id> [#chan priv #foo* !#bar]"),
+                   t_d("Set the source channels for an exempt entry."),
+                   [=](const CString& sLine) { ExemptSetSources(sLine); });
+        AddCommand(
+            "ExemptDump", "",
+            t_d("Dump a list of all current exempt entries to be used later."),
+            [=](const CString& sLine) { ExemptDump(); });
     }
 
     ~CWatcherMod() override {}
 
-
     bool OnLoad(const CString& sArgs, CString& sMessage) override {
-        // Just to make sure we don't mess up badly
         m_lsWatchers.clear();
+        m_lsExempts.clear();
 
         bool bWarn = false;
 
         for (MCString::iterator it = BeginNV(); it != EndNV(); ++it) {
+            CString sKey = it->first;
             VCString vList;
-            it->first.Split("\n", vList);
 
-            // Backwards compatibility with the old save format
-            if (vList.size() != 5 && vList.size() != 7) {
-                bWarn = true;
-                continue;
+            bool bIsExempt = false;
+            if (sKey.StartsWith("EXEMPT:")) {
+                bIsExempt = true;
+                sKey = sKey.substr(7);  // Remove "EXEMPT:" prefix
+            } else if (sKey.StartsWith("WATCH:")) {
+                sKey = sKey.substr(6);  // Remove "WATCH:" prefix
             }
 
-            CWatchEntry WatchEntry(vList[0], vList[1], vList[2]);
-            if (vList[3].Equals("disabled"))
-                WatchEntry.SetDisabled(true);
-            else
-                WatchEntry.SetDisabled(false);
+            sKey.Split("\n", vList);
 
-            // Backwards compatibility with the old save format
-            if (vList.size() == 5) {
-                WatchEntry.SetSources(vList[4]);
+            if (bIsExempt) {
+                // Exempt entries: hostmask, pattern, disabled, sources
+                if (vList.size() != 4) {
+                    bWarn = true;
+                    continue;
+                }
+
+                CWatchEntry ExemptEntry(vList[0], "",
+                                        vList[1]);  // Empty target
+                ExemptEntry.SetDisabled(vList[2].Equals("disabled"));
+                ExemptEntry.SetSources(vList[3]);
+                // Don't set detached settings for exempt entries
+
+                m_lsExempts.push_back(ExemptEntry);
             } else {
-                WatchEntry.SetDetachedClientOnly(vList[4].ToBool());
-                WatchEntry.SetDetachedChannelOnly(vList[5].ToBool());
-                WatchEntry.SetSources(vList[6]);
+                // Watch entries: full format with backwards compatibility
+                if (vList.size() != 5 && vList.size() != 7) {
+                    bWarn = true;
+                    continue;
+                }
+
+                CWatchEntry WatchEntry(vList[0], vList[1], vList[2]);
+                WatchEntry.SetDisabled(vList[3].Equals("disabled"));
+
+                if (vList.size() == 5) {
+                    WatchEntry.SetSources(vList[4]);
+                } else {
+                    WatchEntry.SetDetachedClientOnly(vList[4].ToBool());
+                    WatchEntry.SetDetachedChannelOnly(vList[5].ToBool());
+                    WatchEntry.SetSources(vList[6]);
+                }
+
+                m_lsWatchers.push_back(WatchEntry);
             }
-            m_lsWatchers.push_back(WatchEntry);
         }
 
         if (bWarn)
             sMessage = t_s("WARNING: malformed entry found while loading");
-        
+
         return true;
     }
-    
     void OnRawMode(const CNick& OpNick, CChan& Channel, const CString& sModes,
                    const CString& sArgs) override {
         Process(OpNick, "* " + OpNick.GetNick() + " sets mode: " + sModes +
@@ -368,6 +409,14 @@ class CWatcherMod : public CModule {
         CIRCNetwork* pNetwork = GetNetwork();
         CChan* pChannel = pNetwork->FindChan(sSource);
 
+        for (list<CWatchEntry>::iterator it = m_lsExempts.begin();
+             it != m_lsExempts.end(); ++it) {
+            CWatchEntry& ExemptEntry = *it;
+            if (ExemptEntry.IsMatch(Nick, sMessage, sSource, pNetwork)) {
+                return;  // Skip processing if exempt
+            }
+        }
+
         for (list<CWatchEntry>::iterator it = m_lsWatchers.begin();
              it != m_lsWatchers.end(); ++it) {
             CWatchEntry& WatchEntry = *it;
@@ -436,13 +485,13 @@ class CWatcherMod : public CModule {
         bool bDetachedClientOnly = sLine.Token(2).ToBool();
         CString sTok = sLine.Token(1);
         unsigned int uIdx;
-        
+
         if (sTok == "*") {
             uIdx = ~0;
         } else {
             uIdx = sTok.ToUInt();
         }
-        
+
         if (uIdx == (unsigned int)~0) {
             for (list<CWatchEntry>::iterator it = m_lsWatchers.begin();
                  it != m_lsWatchers.end(); ++it) {
@@ -484,7 +533,7 @@ class CWatcherMod : public CModule {
         } else {
             uIdx = sTok.ToUInt();
         }
-        
+
         if (uIdx == (unsigned int)~0) {
             for (list<CWatchEntry>::iterator it = m_lsWatchers.begin();
                  it != m_lsWatchers.end(); ++it) {
@@ -556,6 +605,184 @@ class CWatcherMod : public CModule {
         }
     }
 
+    void ExemptAdd(const CString& sLine) {
+        CString sHostMask = sLine.Token(1);
+        CString sPattern = sLine.Token(2, true);
+
+        CString sMessage;
+
+        if (sHostMask.size()) {
+            CWatchEntry ExemptEntry(sHostMask, "",
+                                    sPattern);  // Empty string for target
+
+            bool bExists = false;
+            for (list<CWatchEntry>::iterator it = m_lsExempts.begin();
+                 it != m_lsExempts.end(); ++it) {
+                if (*it == ExemptEntry) {
+                    sMessage = t_f("Exempt entry for {1} already exists.")(
+                        ExemptEntry.GetHostMask());
+                    bExists = true;
+                    break;
+                }
+            }
+
+            if (!bExists) {
+                sMessage = t_f("Adding exempt entry: {1} watching for [{2}]")(
+                    ExemptEntry.GetHostMask(), ExemptEntry.GetPattern());
+                m_lsExempts.push_back(ExemptEntry);
+            }
+        } else {
+            sMessage = t_s("ExemptAdd: Not enough arguments.  Try Help");
+        }
+
+        PutModule(sMessage);
+        Save();
+    }
+
+    void ExemptRemove(const CString& sLine) {
+        unsigned int uIdx = sLine.Token(1).ToUInt();
+
+        uIdx--;  // "convert" index to zero based
+        if (uIdx >= m_lsExempts.size()) {
+            PutModule(t_s("Invalid Id"));
+            return;
+        }
+
+        list<CWatchEntry>::iterator it = m_lsExempts.begin();
+        for (unsigned int a = 0; a < uIdx; a++) ++it;
+
+        m_lsExempts.erase(it);
+        PutModule(t_f("Exempt Id {1} removed.")(uIdx + 1));
+        Save();
+    }
+
+    void ExemptList() {
+        CTable Table;
+        Table.AddColumn(t_s("Id"));
+        Table.AddColumn(t_s("HostMask"));
+        Table.AddColumn(t_s("Pattern"));
+        Table.AddColumn(t_s("Sources"));
+        Table.AddColumn(t_s("Off"));
+
+        unsigned int uIdx = 1;
+        for (list<CWatchEntry>::iterator it = m_lsExempts.begin();
+             it != m_lsExempts.end(); ++it, uIdx++) {
+            CWatchEntry& ExemptEntry = *it;
+
+            Table.AddRow();
+            Table.SetCell(t_s("Id"), CString(uIdx));
+            Table.SetCell(t_s("HostMask"), ExemptEntry.GetHostMask());
+            // Table.SetCell(t_s("Target"), ExemptEntry.GetTarget());
+            Table.SetCell(t_s("Pattern"), ExemptEntry.GetPattern());
+            Table.SetCell(t_s("Sources"), ExemptEntry.GetSourcesStr());
+            Table.SetCell(t_s("Off"),
+                          (ExemptEntry.IsDisabled()) ? t_s("Off") : "");
+        }
+
+        if (Table.size()) {
+            PutModule(Table);
+        } else {
+            PutModule(t_s("You have no exempt entries."));
+        }
+    }
+
+    void ExemptEnable(const CString& sLine) {
+        CString sTok = sLine.Token(1);
+        if (sTok == "*") {
+            SetExemptDisabled(~0, false);
+        } else {
+            SetExemptDisabled(sTok.ToUInt(), false);
+        }
+    }
+
+    void ExemptDisable(const CString& sLine) {
+        CString sTok = sLine.Token(1);
+        if (sTok == "*") {
+            SetExemptDisabled(~0, true);
+        } else {
+            SetExemptDisabled(sTok.ToUInt(), true);
+        }
+    }
+
+    void SetExemptDisabled(unsigned int uIdx, bool bDisabled) {
+        if (uIdx == (unsigned int)~0) {
+            for (list<CWatchEntry>::iterator it = m_lsExempts.begin();
+                 it != m_lsExempts.end(); ++it) {
+                (*it).SetDisabled(bDisabled);
+            }
+
+            PutModule(bDisabled ? t_s("Disabled all exempt entries.")
+                                : t_s("Enabled all exempt entries."));
+            Save();
+            return;
+        }
+
+        uIdx--;  // "convert" index to zero based
+        if (uIdx >= m_lsExempts.size()) {
+            PutModule(t_s("Invalid Id"));
+            return;
+        }
+
+        list<CWatchEntry>::iterator it = m_lsExempts.begin();
+        for (unsigned int a = 0; a < uIdx; a++) ++it;
+
+        (*it).SetDisabled(bDisabled);
+        if (bDisabled)
+            PutModule(t_f("Exempt Id {1} disabled")(uIdx + 1));
+        else
+            PutModule(t_f("Exempt Id {1} enabled")(uIdx + 1));
+        Save();
+    }
+    void ExemptSetSources(const CString& sLine) {
+        unsigned int uIdx = sLine.Token(1).ToUInt();
+        CString sSources = sLine.Token(2, true);
+
+        uIdx--;  // "convert" index to zero based
+        if (uIdx >= m_lsExempts.size()) {
+            PutModule(t_s("Invalid Id"));
+            return;
+        }
+
+        list<CWatchEntry>::iterator it = m_lsExempts.begin();
+        for (unsigned int a = 0; a < uIdx; a++) ++it;
+
+        (*it).SetSources(sSources);
+        PutModule(t_f("Sources set for exempt Id {1}.")(uIdx + 1));
+        Save();
+    }
+
+    void ExemptDump() {
+        if (m_lsExempts.empty()) {
+            PutModule(t_s("You have no exempt entries."));
+            return;
+        }
+
+        PutModule("---------------");
+        PutModule("/msg " + GetModNick() + " EXEMPTCLEAR");
+
+        unsigned int uIdx = 1;
+
+        for (list<CWatchEntry>::iterator it = m_lsExempts.begin();
+             it != m_lsExempts.end(); ++it, uIdx++) {
+            CWatchEntry& ExemptEntry = *it;
+            PutModule("/msg " + GetModNick() + " EXEMPTADD " +
+                      ExemptEntry.GetHostMask() + " " +
+                      ExemptEntry.GetPattern());
+
+            if (ExemptEntry.GetSourcesStr().size()) {
+                PutModule("/msg " + GetModNick() + " EXEMPTSETSOURCES " +
+                          CString(uIdx) + " " + ExemptEntry.GetSourcesStr());
+            }
+
+            if (ExemptEntry.IsDisabled()) {
+                PutModule("/msg " + GetModNick() + " EXEMPTDISABLE " +
+                          CString(uIdx));
+            }
+        }
+
+        PutModule("---------------");
+    }
+
     void Dump() {
         if (m_lsWatchers.empty()) {
             PutModule(t_s("You have no entries."));
@@ -601,7 +828,7 @@ class CWatcherMod : public CModule {
     void SetSources(const CString& sLine) {
         unsigned int uIdx = sLine.Token(1).ToUInt();
         CString sSources = sLine.Token(2, true);
-        
+
         uIdx--;  // "convert" index to zero based
         if (uIdx >= m_lsWatchers.size()) {
             PutModule(t_s("Invalid Id"));
@@ -624,7 +851,7 @@ class CWatcherMod : public CModule {
             SetDisabled(sTok.ToUInt(), false);
         }
     }
-    
+
     void Disable(const CString& sLine) {
         CString sTok = sLine.Token(1);
         if (sTok == "*") {
@@ -641,9 +868,8 @@ class CWatcherMod : public CModule {
     }
 
     void Remove(const CString& sLine) {
-        
         unsigned int uIdx = sLine.Token(1).ToUInt();
-        
+
         uIdx--;  // "convert" index to zero based
         if (uIdx >= m_lsWatchers.size()) {
             PutModule(t_s("Invalid Id"));
@@ -659,7 +885,6 @@ class CWatcherMod : public CModule {
     }
 
     void Watch(const CString& sLine) {
-    
         CString sHostMask = sLine.Token(1);
         CString sTarget = sLine.Token(2);
         CString sPattern = sLine.Token(3, true);
@@ -690,27 +915,42 @@ class CWatcherMod : public CModule {
             sMessage = t_s("Watch: Not enough arguments.  Try Help");
         }
 
-        PutModNotice(sMessage);
+        PutModule(sMessage);
 
         Save();
     }
-
     void Save() {
         ClearNV(false);
+
+        // Save watch entries with full format
         for (list<CWatchEntry>::iterator it = m_lsWatchers.begin();
              it != m_lsWatchers.end(); ++it) {
             CWatchEntry& WatchEntry = *it;
-            CString sSave;
+            CString sSave = "WATCH:";
 
-            sSave = WatchEntry.GetHostMask() + "\n";
+            sSave += WatchEntry.GetHostMask() + "\n";
             sSave += WatchEntry.GetTarget() + "\n";
             sSave += WatchEntry.GetPattern() + "\n";
             sSave += (WatchEntry.IsDisabled() ? "disabled\n" : "enabled\n");
             sSave += CString(WatchEntry.IsDetachedClientOnly()) + "\n";
             sSave += CString(WatchEntry.IsDetachedChannelOnly()) + "\n";
             sSave += WatchEntry.GetSourcesStr();
-            // Without this, loading fails if GetSourcesStr()
-            // returns an empty string
+            sSave += " ";
+
+            SetNV(sSave, "", false);
+        }
+
+        // Save exempt entries with simplified format (no target, no detached
+        // settings)
+        for (list<CWatchEntry>::iterator it = m_lsExempts.begin();
+             it != m_lsExempts.end(); ++it) {
+            CWatchEntry& ExemptEntry = *it;
+            CString sSave = "EXEMPT:";
+
+            sSave += ExemptEntry.GetHostMask() + "\n";
+            sSave += ExemptEntry.GetPattern() + "\n";
+            sSave += (ExemptEntry.IsDisabled() ? "disabled\n" : "enabled\n");
+            sSave += ExemptEntry.GetSourcesStr();
             sSave += " ";
 
             SetNV(sSave, "", false);
@@ -720,6 +960,7 @@ class CWatcherMod : public CModule {
     }
 
     list<CWatchEntry> m_lsWatchers;
+    list<CWatchEntry> m_lsExempts;
 };
 
 template <>

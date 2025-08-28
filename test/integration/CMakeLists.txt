@@ -45,6 +45,7 @@ add_executable(inttest
 	"tests/core.cpp"
 	"tests/modules.cpp"
 	"tests/scripting.cpp"
+	"tests/modules/watch_test.cpp"
 	"${GTEST_ROOT}/src/gtest-all.cc"
 	"${GMOCK_ROOT}/src/gmock-all.cc")
 
