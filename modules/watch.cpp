@@ -246,88 +246,118 @@ class CWatcherMod : public CModule {
                 Channel.GetName());
     }
 
-    void OnKick(const CNick& OpNick, const CString& sKickedNick, CChan& Channel,
-                const CString& sMessage) override {
+    void OnKickMessage(CKickMessage& Message) override {
+        const CNick& OpNick = Message.GetNick();
+        const CString sKickedNick = Message.GetKickedNick();
+        CChan& Channel = *Message.GetChan();
+        const CString sMessage = Message.GetReason();
         Process(OpNick,
                 "* " + OpNick.GetNick() + " kicked " + sKickedNick + " from " +
                     Channel.GetName() + " because [" + sMessage + "]",
                 Channel.GetName());
     }
 
-    void OnQuit(const CNick& Nick, const CString& sMessage,
-                const vector<CChan*>& vChans) override {
-        Process(Nick, "* Quits: " + Nick.GetNick() + " (" + Nick.GetIdent() +
-                          "@" + Nick.GetHost() +
-                          ") "
-                          "(" +
-                          sMessage + ")",
-                "");
+    void OnQuitMessage(CQuitMessage& Message,
+                       const vector<CChan*>& vChans) override {
+        const CNick& Nick = Message.GetNick();
+        const CString& sMessage = Message.GetReason();
+        // Fix for #451 - Skip ignored channels.
+        CString sQuitMessage = "* Quits: " + Nick.GetNick() + " (" +
+                               Nick.GetIdent() + "@" + Nick.GetHost() + ") (" +
+                               sMessage + ")";
+        for (CChan* pChan : vChans) {
+            Process(Nick, sQuitMessage, pChan->GetName());
+        }
     }
 
-    void OnJoin(const CNick& Nick, CChan& Channel) override {
-        Process(Nick, "* " + Nick.GetNick() + " (" + Nick.GetIdent() + "@" +
-                          Nick.GetHost() + ") joins " + Channel.GetName(),
+    void OnJoinMessage(CJoinMessage& Message) override {
+        const CNick& Nick = Message.GetNick();
+        CChan& Channel = *Message.GetChan();
+        Process(Nick,
+                "* " + Nick.GetNick() + " (" + Nick.GetIdent() + "@" +
+                    Nick.GetHost() + ") joins " + Channel.GetName(),
                 Channel.GetName());
     }
 
-    void OnPart(const CNick& Nick, CChan& Channel,
-                const CString& sMessage) override {
-        Process(Nick, "* " + Nick.GetNick() + " (" + Nick.GetIdent() + "@" +
-                          Nick.GetHost() + ") parts " + Channel.GetName() +
-                          "(" + sMessage + ")",
+    void OnPartMessage(CPartMessage& Message) override {
+        const CNick& Nick = Message.GetNick();
+        CChan& Channel = *Message.GetChan();
+        const CString sMessage = Message.GetReason();
+        Process(Nick,
+                "* " + Nick.GetNick() + " (" + Nick.GetIdent() + "@" +
+                    Nick.GetHost() + ") parts " + Channel.GetName() + "(" +
+                    sMessage + ")",
                 Channel.GetName());
     }
 
-    void OnNick(const CNick& OldNick, const CString& sNewNick,
-                const vector<CChan*>& vChans) override {
+    void OnNickMessage(CNickMessage& Message,
+                       const vector<CChan*>& vChans) override {
+        const CNick& OldNick = Message.GetNick();
+        const CString sNewNick = Message.GetNewNick();
         Process(OldNick,
                 "* " + OldNick.GetNick() + " is now known as " + sNewNick, "");
     }
 
-    EModRet OnCTCPReply(CNick& Nick, CString& sMessage) override {
+    EModRet OnCTCPReplyMessage(CCTCPMessage& Message) override {
+        const CNick& Nick = Message.GetNick();
+        CString sMessage = Message.GetText();
         Process(Nick, "* CTCP: " + Nick.GetNick() + " reply [" + sMessage + "]",
                 "priv");
         return CONTINUE;
     }
 
-    EModRet OnPrivCTCP(CNick& Nick, CString& sMessage) override {
+    EModRet OnPrivCTCPMessage(CCTCPMessage& Message) override {
+        const CNick& Nick = Message.GetNick();
+        CString sMessage = Message.GetText();
         Process(Nick, "* CTCP: " + Nick.GetNick() + " [" + sMessage + "]",
                 "priv");
         return CONTINUE;
     }
 
-    EModRet OnChanCTCP(CNick& Nick, CChan& Channel,
-                       CString& sMessage) override {
-        Process(Nick, "* CTCP: " + Nick.GetNick() + " [" + sMessage +
-                          "] to "
-                          "[" +
-                          Channel.GetName() + "]",
+    EModRet OnChanCTCPMessage(CCTCPMessage& Message) override {
+        const CNick& Nick = Message.GetNick();
+        CString sMessage = Message.GetText();
+        CChan& Channel = *Message.GetChan();
+        Process(Nick,
+                "* CTCP: " + Nick.GetNick() + " [" + sMessage + "] to [" +
+                    Channel.GetName() + "]",
                 Channel.GetName());
         return CONTINUE;
     }
 
-    EModRet OnPrivNotice(CNick& Nick, CString& sMessage) override {
+    EModRet OnPrivNoticeMessage(CNoticeMessage& Message) override {
+        const CNick& Nick = Message.GetNick();
+        CString sMessage = Message.GetText();
         Process(Nick, "-" + Nick.GetNick() + "- " + sMessage, "priv");
         return CONTINUE;
     }
 
-    EModRet OnChanNotice(CNick& Nick, CChan& Channel,
-                         CString& sMessage) override {
-        Process(Nick, "-" + Nick.GetNick() + ":" + Channel.GetName() + "- " +
-                          sMessage,
-                Channel.GetName());
+    EModRet OnChanNoticeMessage(CNoticeMessage& Message) override {
+        const CNick& Nick = Message.GetNick();
+        CString sMessage = Message.GetText();
+        CChan& Channel = *Message.GetChan();
+        Process(
+            Nick,
+            "-" + Nick.GetNick() + ":" + Channel.GetName() + "- " + sMessage,
+            Channel.GetName());
         return CONTINUE;
     }
 
-    EModRet OnPrivMsg(CNick& Nick, CString& sMessage) override {
+    EModRet OnPrivTextMessage(CTextMessage& Message) override {
+        const CNick& Nick = Message.GetNick();
+        CString sMessage = Message.GetText();
         Process(Nick, "<" + Nick.GetNick() + "> " + sMessage, "priv");
         return CONTINUE;
     }
 
-    EModRet OnChanMsg(CNick& Nick, CChan& Channel, CString& sMessage) override {
-        Process(Nick, "<" + Nick.GetNick() + ":" + Channel.GetName() + "> " +
-                          sMessage,
-                Channel.GetName());
+    EModRet OnChanTextMessage(CTextMessage& Message) override {
+        const CNick& Nick = Message.GetNick();
+        CString sMessage = Message.GetText();
+        CChan& Channel = *Message.GetChan();
+        Process(
+            Nick,
+            "<" + Nick.GetNick() + ":" + Channel.GetName() + "> " + sMessage,
+            Channel.GetName());
         return CONTINUE;
     }
 
