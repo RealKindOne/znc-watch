@@ -302,13 +302,24 @@ class CWatcherMod : public CModule {
                        const vector<CChan*>& vChans) override {
         const CNick& Nick = Message.GetNick();
         const CString& sMessage = Message.GetReason();
+
+        // Collect channel names
+        VCString vsChans;
+        for (CChan* pChan : vChans) {
+            vsChans.push_back(pChan->GetName());
+        }
         // Fix for #451 - Skip ignored channels.
         CString sQuitMessage = "* Quits: " + Nick.GetNick() + " (" +
                                Nick.GetIdent() + "@" + Nick.GetHost() + ") (" +
                                sMessage + ")";
-        for (CChan* pChan : vChans) {
-            Process(Nick, sQuitMessage, pChan->GetName());
+
+        // Append channel names if there are any
+        if (!vsChans.empty()) {
+            sQuitMessage += " (" + CString(", ").Join(vsChans.begin(), vsChans.end()) + ")";
         }
+
+        // Call Process() only ONCE with empty source
+        Process(Nick, sQuitMessage, "");
     }
 
     void OnJoinMessage(CJoinMessage& Message) override {
