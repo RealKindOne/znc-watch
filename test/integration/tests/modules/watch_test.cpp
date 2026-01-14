@@ -235,8 +235,255 @@ TEST_F(ZNCTest, WatchModuleQuitWithChannels) {
     // Verify no duplicate messages
     auto remainder = client.ReadRemainder();
     EXPECT_THAT(remainder.toStdString(), Not(HasSubstr("* Quits: test")));
+
+
+    client.Write("PRIVMSG *watch :list");
+
+    // clang-format off
+    // :+----+----------+--------+---------+---------+-----+--------------------+---------------------+
+    // :| Id | HostMask | Target | Pattern | Sources | Off | DetachedClientOnly | DetachedChannelOnly |
+    // :+----+----------+--------+---------+---------+-----+--------------------+---------------------+
+    // :| 1  | *!*@*    | $*     | *       |         |     | No                 | No                  |
+    // :+----+----------+--------+---------+---------+-----+--------------------+---------------------+
+    // clang-format on
+
+    client.Write("PRIVMSG *watch :exemptlist");
+    client.ReadUntil("You have no exempt entries.");
+
+    ircd.Write(":test!ident@test.com JOIN :#foobar");
+    client.ReadUntil("test!ident@test.com JOIN :#foobar");
+
+    ircd.Write(":test!ident@test.com JOIN :#test");
+    client.ReadUntil("test!ident@test.com JOIN :#test");
+
+    ircd.Write(":test!ident@test.com PRIVMSG #foobar :example");
+    client.ReadUntil("<test:#foobar> example");
+
+    client.Write("PRIVMSG *watch :exemptadd *!*@test.com *example*");
+    client.ReadUntil("Adding exempt entry:");
+
+    client.Write("PRIVMSG *watch :exemptsetsources 1 #foobar");
+    client.ReadUntil("Sources set for exempt Id 1.");
+
+    // Don't trigger since channel is exempt from previous command
+    ircd.Write(":test!ident@test.com PRIVMSG #foobar :example");
+    auto exempt = client.ReadRemainder();
+    EXPECT_THAT(exempt.toStdString(), Not(HasSubstr("<test:#foobar> example")));
+
+    // No exempt for #test, so this should work.
+    ircd.Write(":test!ident@test.com PRIVMSG #test :example");
+    client.ReadUntil("<test:#test> example");
+
+    // Disable First Exempt.
+    client.Write("PRIVMSG *watch :exemptdisable 1");
+    client.ReadUntil("Exempt Id 1 disabled");
+
+    // clang-format off
+    // :+----+--------------+-----------+---------+-----+
+    // :| Id | HostMask     | Pattern   | Sources | Off |
+    // :+----+--------------+-----------+---------+-----+
+    // :| 1  | *!*@test.com | *example* | #foobar | Off |
+    // :+----+--------------+-----------+---------+-----+
+    // clang-format on
+
+    // Disabled so it should show.
+    ircd.Write(":test!ident@test.com PRIVMSG #test :example");
+    client.ReadUntil("<test:#test> example");
+
+    client.Write("PRIVMSG *watch :exemptenable 1");
+    client.ReadUntil("Exempt Id 1 enabled");
+
+    // Remove channel #foobar. Applies to all channels now.
+    client.Write("PRIVMSG *watch :exemptsetsources 1");
+    client.ReadUntil("Sources set for exempt Id 1.");
+
+    // clang-format off
+    // :+----+--------------+-----------+---------+-----+
+    // :| Id | HostMask     | Pattern   | Sources | Off |
+    // :+----+--------------+-----------+---------+-----+
+    // :| 1  | *!*@test.com | *example* |         |     |
+    // :+----+--------------+-----------+---------+-----+
+    // clang-format on
+
+    // Applies to all channels...
+    ircd.Write(":test!ident@test.com PRIVMSG #test :example");
+    auto exempt2 = client.ReadRemainder();
+    EXPECT_THAT(exempt2.toStdString(), Not(HasSubstr("<test:#foobar> example")));
+
+
+    client.Write("PRIVMSG *watch :del 1");
+    client.ReadUntil("Id 1 removed");
+
+    client.Write("PRIVMSG *watch :exemptdel 1");
+    client.ReadUntil("Exempt Id 1 removed");
+
+    client.Write("PRIVMSG *watch :add *!*@test.com *badword *example*");
+    client.ReadUntil("Adding entry: *!*@test.com watching for");
+
+    client.Write("PRIVMSG *watch :setsources 1 #*");
+    client.ReadUntil("Sources set for Id 1");
+
+    client.Write("PRIVMSG *watch :exemptadd *!*test.com *example*");
+    client.ReadUntil("Adding exempt entry: *!*@*test.com watching for");
+
+
+    client.Write("PRIVMSG *watch :exemptsetsources 1 #a");
+    client.ReadUntil("Sources set for exempt Id 1");
+
+    ircd.Write(":test!ident@test.com QUIT :asdf example asdf");
+    client.ReadUntil("asdf");
+
 }
 
+TEST_F(ZNCTest, WatchModuleExemptRealWorld) {
+    auto znc = Run();
+    auto ircd = ConnectIRCd();
+    auto client = LoginClient();
+
+    // Load watch module
+    client.Write("znc loadmod watch");
+    client.ReadUntil("Loaded module");
+
+    client.Write("PRIVMSG *watch :add *!*@* *badword *example*");
+    client.ReadUntil("Adding entry:");
+    client.Write("PRIVMSG *watch :setsources 1 #*");
+    client.ReadUntil("Sources set for Id 1");
+
+    client.Write("PRIVMSG *watch :add *!*@* *k-lined *K-Lined*");
+    client.ReadUntil("Adding entry:");
+    client.Write("PRIVMSG *watch :setsources 2 #*");
+    client.ReadUntil("Sources set for Id 2");
+
+    client.Write("PRIVMSG *watch :add *!*@* *k-lined *no spam*");
+    client.ReadUntil("Adding entry:");
+    client.Write("PRIVMSG *watch :setsources 3 #*");
+    client.ReadUntil("Sources set for Id 3");
+
+    client.Write("PRIVMSG *watch :add *!*@* *k-lined K-Lined");
+    client.ReadUntil("Adding entry:");
+    client.Write("PRIVMSG *watch :setsources 4 #*");
+    client.ReadUntil("Sources set for Id 4");
+
+    // Set up exempt entry exactly as in the log
+    client.Write("PRIVMSG *watch :exemptadd *!*@test *example*");
+    client.ReadUntil("Adding exempt entry:");
+    client.Write("PRIVMSG *watch :exemptsetsources 1 #a");
+    client.ReadUntil("Sources set for exempt Id 1");
+
+    client.Write("PRIVMSG *watch :list");
+    client.ReadUntil("| 1  | *!*@*    | *badword | *example* | #*      |");
+    client.ReadUntil("| 2  | *!*@*    | *k-lined | *K-Lined* | #*      |");
+    client.ReadUntil("| 3  | *!*@*    | *k-lined | *no spam* | #*      |");
+    client.ReadUntil("| 4  | *!*@*    | *k-lined | K-Lined   | #*      |");
+
+    client.Write("PRIVMSG *watch :exemptlist");
+    client.ReadUntil("| 1  | *!*@test | *example* | #a      |");
+
+    ircd.Write(":server 001 nick :Hello");
+    ircd.Write(":nick JOIN :#test");
+
+    ircd.Write(":user!ident@test JOIN :#test");
+    client.ReadUntil("user!ident@test JOIN :#test");
+
+    client.ReadRemainder();
+
+    ircd.Write(":user!ident@test QUIT :Quit: asdf example asdf");
+
+    QByteArray response = client.ReadRemainder();
+
+    // Since the exempt entry has source #a but the user is in #test,
+    // the exempt should NOT block the watch. We SHOULD get a notification from *badword
+    EXPECT_THAT(response.toStdString(), HasSubstr("*badword!watch@znc.in PRIVMSG nick :* Quits: user (ident@test) (Quit: asdf example asdf)"))
+        << "Expected watch notification for *example* pattern, but exempt with source #a should not block when user is in #test";
+
+    // Also check that we got channel information in the quit message
+    EXPECT_THAT(response.toStdString(), HasSubstr("(#test)"))
+        << "Expected quit message to include channel #test";
+
+    // Test other patterns in the same quit message
+    EXPECT_THAT(response.toStdString(), Not(HasSubstr("*k-lined!watch@znc.in")))
+        << "Should not get *k-lined notifications for this quit message (no K-Lined or no spam patterns)";
+}
+
+TEST_F(ZNCTest, WatchModuleExemptSourceMatching) {
+    auto znc = Run();
+    auto ircd = ConnectIRCd();
+    auto client = LoginClient();
+
+    client.Write("znc loadmod watch");
+    client.ReadUntil("Loaded module");
+
+    client.Write("PRIVMSG *watch :add *!*@* *notify *");
+    client.ReadUntil("Adding entry:");
+    client.Write("PRIVMSG *watch :setsources 1 #*");
+    client.ReadUntil("Sources set for Id 1");
+
+    client.Write("PRIVMSG *watch :exemptadd test!*@*");
+    client.ReadUntil("Adding exempt entry:");
+    client.Write("PRIVMSG *watch :exemptsetsources 1 #a");
+    client.ReadUntil("Sources set for exempt Id 1");
+
+    ircd.Write(":server 001 nick :Hello");
+    ircd.Write(":nick JOIN :#a");
+    ircd.Write(":nick JOIN :#b");
+
+    ircd.Write(":test!user@host JOIN :#a");
+    ircd.Write(":test!user@host JOIN :#b");
+
+    ircd.Write(":test!user@host QUIT :Leaving");
+
+    QByteArray response;
+    client.ReadUntilAndGet("*notify!watch@znc.in PRIVMSG nick :* Quits: test (user@host) (Leaving)", response);
+
+    // Should contain #b but not be blocked by exempt for #a
+    EXPECT_THAT(response.toStdString(), HasSubstr("(#a, #b)"))
+        << "Expected both channels in quit message";
+
+    // Verify we got exactly one notification
+    auto remainder = client.ReadRemainder();
+    int count = std::count(remainder.begin(), remainder.end(), '*');
+    EXPECT_LT(count, 10) << "Expected only one notification, got multiple";
+
+    client.Write("PRIVMSG *watch :exemptdel 1");
+    client.ReadUntil("Exempt Id 1 removed");
+
+    client.Write("PRIVMSG *watch :exemptadd test!*@*");
+    client.ReadUntil("Adding exempt entry:");
+    client.Write("PRIVMSG *watch :exemptsetsources 1 #*");
+    client.ReadUntil("Sources set for exempt Id 1");
+
+    client.ReadRemainder();
+    ircd.Write(":test!user@host JOIN :#a");  // Re-join
+    ircd.Write(":test!user@host QUIT :Leaving 2");
+
+    remainder = client.ReadRemainder();
+    EXPECT_THAT(remainder.toStdString(), Not(HasSubstr("*notify!watch@znc.in")))
+        << "Exempt with #* should block all channel notifications";
+
+    client.Write("PRIVMSG *watch :exemptdel 1");
+    client.ReadUntil("Exempt Id 1 removed");
+
+    client.Write("PRIVMSG *watch :exemptadd test!*@*");
+    client.ReadUntil("Adding exempt entry:");
+    client.Write("PRIVMSG *watch :exemptsetsources 1 #a");
+    client.ReadUntil("Sources set for exempt Id 1");
+
+    client.Write("PRIVMSG *watch :exemptadd test!*@* *Leaving 3*");
+    client.ReadUntil("Adding exempt entry:");
+    client.Write("PRIVMSG *watch :exemptsetsources 2 #b");
+    client.ReadUntil("Sources set for exempt Id 2");
+
+    client.ReadRemainder();
+    ircd.Write(":test!user@host JOIN :#a");
+    ircd.Write(":test!user@host JOIN :#b");
+
+    ircd.Write(":test!user@host QUIT :Leaving 3 now");
+	client.Write("PRIVMSG *watch :exemptlist");
+
+
+    EXPECT_THAT(remainder.toStdString(), Not(HasSubstr("*notify!watch@znc.in")))
+        << "Both channels should be exempted by different exempt entries";
+}
 
 }  // namespace
 }  // namespace znc_inttest

@@ -303,23 +303,42 @@ class CWatcherMod : public CModule {
         const CNick& Nick = Message.GetNick();
         const CString& sMessage = Message.GetReason();
 
-        // Collect channel names
-        VCString vsChans;
+        // Collect all channel names, except ignored channel
+        VCString vsAllChans;
         for (CChan* pChan : vChans) {
-            vsChans.push_back(pChan->GetName());
+            vsAllChans.push_back(pChan->GetName());
         }
         // Fix for #451 - Skip ignored channels.
+        // Note:
+        // If you only share a ignored channel then you will not get the quit message.
+        // If you share the ignored channel and a non-ignored channel then you get
+        // both channels in the message.
         CString sQuitMessage = "* Quits: " + Nick.GetNick() + " (" +
                                Nick.GetIdent() + "@" + Nick.GetHost() + ") (" +
                                sMessage + ")";
 
         // Append channel names if there are any
-        if (!vsChans.empty()) {
-            sQuitMessage += " (" + CString(", ").Join(vsChans.begin(), vsChans.end()) + ")";
+        if (!vsAllChans.empty()) {
+            sQuitMessage += " (" + CString(", ").Join(vsAllChans.begin(), vsAllChans.end()) + ")";
         }
 
-        // Call Process() only ONCE with empty source
-        Process(Nick, sQuitMessage, "");
+        CIRCNetwork* pNetwork = GetNetwork();
+        set<CString> sHandledTargets;
+
+        // Process for each channel AND for global in one pass
+        // Start with empty source for global entries
+        vector<CString> sources;
+        sources.push_back("");  // Global entries
+
+        // Add each channel as a source
+        for (CChan* pChan : vChans) {
+            sources.push_back(pChan->GetName());
+        }
+
+        // Process all sources in one pass
+        for (const CString& sSource : sources) {
+            ProcessForQuit(Nick, sQuitMessage, sSource, sHandledTargets);
+        }
     }
 
     void OnJoinMessage(CJoinMessage& Message) override {
@@ -414,6 +433,69 @@ class CWatcherMod : public CModule {
     }
 
   private:
+    void ProcessForQuit(const CNick& Nick, const CString& sMessage,
+                        const CString& sSource, set<CString>& sHandledTargets) {
+        CIRCNetwork* pNetwork = GetNetwork();
+        CChan* pChannel = pNetwork->FindChan(sSource);
+
+        // Consolidated exempt checking - check both global and source-specific
+        // exempts
+        for (list<CWatchEntry>::iterator it = m_lsExempts.begin();
+             it != m_lsExempts.end(); ++it) {
+            CWatchEntry& ExemptEntry = *it;
+
+            // Check if this exempt entry applies to our current source
+            bool exemptApplies = false;
+
+            if (ExemptEntry.GetSourcesStr().empty()) {
+                // Global exempt - applies to all sources
+                exemptApplies =
+                    ExemptEntry.IsMatch(Nick, sMessage, "", pNetwork);
+            } else {
+                // Source-specific exempt - only applies if source matches
+                exemptApplies =
+                    ExemptEntry.IsMatch(Nick, sMessage, sSource, pNetwork);
+            }
+
+            if (exemptApplies) {
+                return;  // Skip this source
+            }
+        }
+
+        // Process watch entries for this source
+        for (list<CWatchEntry>::iterator it = m_lsWatchers.begin();
+             it != m_lsWatchers.end(); ++it) {
+            CWatchEntry& WatchEntry = *it;
+
+            if (pNetwork->IsUserAttached() &&
+                WatchEntry.IsDetachedClientOnly()) {
+                continue;
+            }
+
+            if (pChannel && !pChannel->IsDetached() &&
+                WatchEntry.IsDetachedChannelOnly()) {
+                continue;
+            }
+
+            if (WatchEntry.IsMatch(Nick, sMessage, sSource, pNetwork) &&
+                sHandledTargets.count(WatchEntry.GetTarget()) < 1) {
+                if (pNetwork->IsUserAttached()) {
+                    pNetwork->PutUser(":" + WatchEntry.GetTarget() +
+                                      "!watch@znc.in PRIVMSG " +
+                                      pNetwork->GetCurNick() + " :" + sMessage);
+                } else {
+                    CQuery* pQuery = pNetwork->AddQuery(WatchEntry.GetTarget());
+                    if (pQuery) {
+                        pQuery->AddBuffer(
+                            ":" + WatchEntry.GetTarget() +
+                                "!watch@znc.in PRIVMSG {target} :{text}",
+                            sMessage);
+                    }
+                }
+                sHandledTargets.insert(WatchEntry.GetTarget());
+            }
+        }
+    }
     void Process(const CNick& Nick, const CString& sMessage,
                  const CString& sSource) {
         set<CString> sHandledTargets;
@@ -683,7 +765,6 @@ class CWatcherMod : public CModule {
             Table.AddRow();
             Table.SetCell(t_s("Id"), CString(uIdx));
             Table.SetCell(t_s("HostMask"), ExemptEntry.GetHostMask());
-            // Table.SetCell(t_s("Target"), ExemptEntry.GetTarget());
             Table.SetCell(t_s("Pattern"), ExemptEntry.GetPattern());
             Table.SetCell(t_s("Sources"), ExemptEntry.GetSourcesStr());
             Table.SetCell(t_s("Off"),
